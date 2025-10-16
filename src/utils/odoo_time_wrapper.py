@@ -392,3 +392,200 @@ def get_time_summary_tables() -> str:
 
     except Exception as e:
         return f"❌ Error fetching time summary: {str(e)}"
+
+
+def get_invoice_summary() -> str:
+    """
+    Get invoice summary with amounts invoiced and paid per month and quarter.
+
+    Returns:
+        Formatted markdown tables with invoice data or error message
+    """
+    try:
+        from datetime import date, timedelta
+        from typing import Tuple
+
+        client = get_odoo_client()
+
+        if not client:
+            return "❌ Could not connect to Odoo. Please check your configuration."
+
+        companies = client.get_companies()
+        if not companies:
+            return "❌ No companies found."
+
+        company_id = companies[0].id
+        company_name = companies[0].name
+
+        today = date.today()
+
+        def get_month_range(year: int, month: int) -> Tuple[date, date]:
+            month_start = date(year, month, 1)
+            if month == 12:
+                next_month = date(year + 1, 1, 1)
+            else:
+                next_month = date(year, month + 1, 1)
+            month_end = next_month - timedelta(days=1)
+            return month_start, month_end
+
+        def format_thousands(amount: float) -> str:
+            return f"{amount / 1000:.1f}k"
+
+        def get_quarter(d: date) -> int:
+            return (d.month - 1) // 3 + 1
+
+        def get_quarter_range(year: int, quarter: int) -> Tuple[date, date]:
+            start_month = (quarter - 1) * 3 + 1
+            quarter_start = date(year, start_month, 1)
+            end_month = start_month + 2
+            if end_month == 12:
+                quarter_end = date(year, 12, 31)
+            else:
+                next_quarter = date(year, end_month + 1, 1)
+                quarter_end = next_quarter - timedelta(days=1)
+            return quarter_start, quarter_end
+
+        # Calculate last 3 months
+        months_data = []
+        for i in range(3):
+            if today.month - i >= 1:
+                month = today.month - i
+                year = today.year
+            else:
+                month = 12 + (today.month - i)
+                year = today.year - 1
+
+            month_start, month_end = get_month_range(year, month)
+
+            invoice_domain = [
+                ('company_id', '=', company_id),
+                ('move_type', '=', 'out_invoice'),
+                ('invoice_date', '>=', month_start.isoformat()),
+                ('invoice_date', '<=', month_end.isoformat()),
+                ('state', '=', 'posted')
+            ]
+
+            invoice_ids = client.odoo.env['account.move'].search(invoice_domain)
+
+            total_invoiced = 0.0
+            total_paid = 0.0
+
+            if invoice_ids:
+                invoice_data = client.odoo.env['account.move'].read(
+                    invoice_ids,
+                    ['amount_untaxed', 'amount_residual', 'amount_total']
+                )
+
+                for invoice in invoice_data:
+                    invoice_amount = float(invoice.get('amount_untaxed', 0.0))
+                    residual_amount = float(invoice.get('amount_residual', 0.0))
+                    total_with_tax = float(invoice.get('amount_total', 0.0))
+
+                    if total_with_tax > 0:
+                        paid_with_tax = total_with_tax - residual_amount
+                        paid_amount = (paid_with_tax / total_with_tax) * invoice_amount
+                    else:
+                        paid_amount = 0.0
+
+                    total_invoiced += invoice_amount
+                    total_paid += paid_amount
+
+            percentage_paid = (total_paid / total_invoiced * 100) if total_invoiced > 0 else 0.0
+            months_data.append((month_start, total_invoiced, total_paid, percentage_paid))
+
+        # Calculate monthly totals
+        total_invoiced_m = sum(invoiced for _, invoiced, _, _ in months_data)
+        total_paid_m = sum(paid for _, _, paid, _ in months_data)
+        total_percentage_m = (total_paid_m / total_invoiced_m * 100) if total_invoiced_m > 0 else 0.0
+
+        # Calculate quarters
+        quarters_data = []
+        current_quarter = get_quarter(today)
+        current_year = today.year
+
+        for i in range(4):
+            quarter = current_quarter - i
+            year = current_year
+
+            while quarter < 1:
+                quarter += 4
+                year -= 1
+
+            quarter_start, quarter_end = get_quarter_range(year, quarter)
+
+            invoice_domain = [
+                ('company_id', '=', company_id),
+                ('move_type', '=', 'out_invoice'),
+                ('invoice_date', '>=', quarter_start.isoformat()),
+                ('invoice_date', '<=', quarter_end.isoformat()),
+                ('state', '=', 'posted')
+            ]
+
+            invoice_ids = client.odoo.env['account.move'].search(invoice_domain)
+
+            total_invoiced_q = 0.0
+            total_paid_q = 0.0
+
+            if invoice_ids:
+                invoice_data = client.odoo.env['account.move'].read(
+                    invoice_ids,
+                    ['amount_untaxed', 'amount_residual', 'amount_total']
+                )
+
+                for invoice in invoice_data:
+                    invoice_amount = float(invoice.get('amount_untaxed', 0.0))
+                    residual_amount = float(invoice.get('amount_residual', 0.0))
+                    total_with_tax = float(invoice.get('amount_total', 0.0))
+
+                    if total_with_tax > 0:
+                        paid_with_tax = total_with_tax - residual_amount
+                        paid_amount = (paid_with_tax / total_with_tax) * invoice_amount
+                    else:
+                        paid_amount = 0.0
+
+                    total_invoiced_q += invoice_amount
+                    total_paid_q += paid_amount
+
+            percentage_paid_q = (total_paid_q / total_invoiced_q * 100) if total_invoiced_q > 0 else 0.0
+            quarters_data.append((year, quarter, total_invoiced_q, total_paid_q, percentage_paid_q))
+
+        # Calculate quarterly totals
+        total_invoiced_q_all = sum(invoiced for _, _, invoiced, _, _ in quarters_data)
+        total_paid_q_all = sum(paid for _, _, _, paid, _ in quarters_data)
+        total_percentage_q = (total_paid_q_all / total_invoiced_q_all * 100) if total_invoiced_q_all > 0 else 0.0
+
+        # Format as markdown
+        result = f"💰 *Invoice Summary* ({company_name})\n\n"
+
+        # Months table
+        result += "*Invoices (excl. VAT)*\n```\n"
+        result += "| Month     | Invoiced | Paid    | Paid % |\n"
+        result += "|-----------|----------|---------|--------|\n"
+        for month_start, invoiced, paid, percentage in months_data:
+            invoiced_fmt = format_thousands(invoiced)
+            paid_fmt = format_thousands(paid)
+            result += f"| {month_start.strftime('%b %Y')}  | {invoiced_fmt:>8} | {paid_fmt:>7} | {percentage:5.0f}% |\n"
+        result += "|-----------|----------|---------|--------|\n"
+        total_inv_fmt = format_thousands(total_invoiced_m)
+        total_paid_fmt = format_thousands(total_paid_m)
+        result += f"| Total     | {total_inv_fmt:>8} | {total_paid_fmt:>7} | {total_percentage_m:5.0f}% |\n"
+        result += "```\n\n"
+
+        # Quarters table
+        result += "*Quarters*\n```\n"
+        result += "| Quarter  | Invoiced | Paid    | Paid % |\n"
+        result += "|----------|----------|---------|--------|\n"
+        for year, quarter, invoiced, paid, percentage in quarters_data:
+            invoiced_fmt = format_thousands(invoiced)
+            paid_fmt = format_thousands(paid)
+            result += f"| Q{quarter} {year}  | {invoiced_fmt:>8} | {paid_fmt:>7} | {percentage:5.0f}% |\n"
+        result += "|----------|----------|---------|--------|\n"
+        total_inv_fmt_q = format_thousands(total_invoiced_q_all)
+        total_paid_fmt_q = format_thousands(total_paid_q_all)
+        result += f"| Total    | {total_inv_fmt_q:>8} | {total_paid_fmt_q:>7} | {total_percentage_q:5.0f}% |\n"
+        result += "```"
+
+        return result
+
+    except Exception as e:
+        return f"❌ Error fetching invoice summary: {str(e)}"

@@ -137,6 +137,18 @@ async def summary_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"❌ Error: {str(e)}")
 
 
+async def invoiced_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Custom command: /invoiced - Show invoice summary with amounts invoiced and paid"""
+    await update.message.reply_text("💰 Fetching invoice summary from Odoo...")
+
+    try:
+        from src.utils.odoo_time_wrapper import get_invoice_summary
+        result = get_invoice_summary()
+        await update.message.reply_text(result, parse_mode="Markdown")
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+
+
 # ============================================
 # VOICE MESSAGE HANDLER
 # ============================================
@@ -158,6 +170,7 @@ COMMAND_MAP = {
     "timeweek": timeweek_command,
     "timemonth": timemonth_command,
     "summary": summary_command,
+    "invoiced": invoiced_command,
 }
 
 
@@ -249,6 +262,7 @@ def main():
         bot.add_command("timeweek", timeweek_command)
         bot.add_command("timemonth", timemonth_command)
         bot.add_command("summary", summary_command)
+        bot.add_command("invoiced", invoiced_command)
 
         # Register voice message handler
         if voice_handler:
