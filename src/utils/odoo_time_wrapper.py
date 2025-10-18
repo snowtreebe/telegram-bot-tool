@@ -589,3 +589,96 @@ def get_invoice_summary() -> str:
 
     except Exception as e:
         return f"❌ Error fetching invoice summary: {str(e)}"
+
+
+def get_projects_list(company_id: Optional[int] = None) -> List[Dict[str, Any]]:
+    """Get list of active projects for selection."""
+    try:
+        client = get_odoo_client()
+        if not client:
+            return []
+
+        if company_id:
+            projects = client.get_projects_by_company(company_id)
+        else:
+            companies = client.get_companies()
+            if companies:
+                company_id = companies[0].id
+                projects = client.get_projects_by_company(company_id)
+            else:
+                return []
+
+        return [{"id": p.id, "name": p.name} for p in projects]
+    except Exception:
+        return []
+
+
+def get_tasks_list(project_id: int) -> List[Dict[str, Any]]:
+    """Get list of tasks for a project."""
+    try:
+        client = get_odoo_client()
+        if not client:
+            return []
+
+        tasks = client.get_tasks(project_id)
+        return [{"id": t.id, "name": t.name} for t in tasks]
+    except Exception:
+        return []
+
+
+def log_time_entry(
+    project_id: int,
+    task_id: int,
+    description: str,
+    hours: float,
+    log_date: Optional[str] = None
+) -> str:
+    """
+    Log a time entry to Odoo.
+
+    Args:
+        project_id: Project ID
+        task_id: Task ID
+        description: Work description
+        hours: Hours spent
+        log_date: Date in YYYY-MM-DD format (defaults to today)
+
+    Returns:
+        Success or error message
+    """
+    try:
+        from datetime import date as dt_date
+
+        client = get_odoo_client()
+        if not client:
+            return "❌ Could not connect to Odoo."
+
+        companies = client.get_companies()
+        if not companies:
+            return "❌ No companies found."
+
+        company_id = companies[0].id
+
+        # Use today if no date specified
+        if not log_date:
+            log_date = dt_date.today().isoformat()
+
+        # Validate employee exists
+        if not client.check_employee_exists(company_id):
+            return ("❌ You don't have an active employee record in the selected company.\n"
+                   "Please contact your Odoo administrator.")
+
+        # Create the time entry
+        timesheet_id = client.log_time(
+            project_id=project_id,
+            task_id=task_id,
+            description=description,
+            time_spent=hours,
+            log_date=log_date,
+            company_id=company_id
+        )
+
+        return f"✅ Time logged successfully!\n📝 {hours}h on {log_date}\n🆔 Entry ID: {timesheet_id}"
+
+    except Exception as e:
+        return f"❌ Error logging time: {str(e)}"

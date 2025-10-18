@@ -19,9 +19,10 @@ from src.utils.telegram_listener import (
     echo_handler
 )
 from src.utils.voice_handler import VoiceCommandHandler, download_voice_file
-from telegram import Update
-from telegram.ext import ContextTypes, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import ContextTypes, MessageHandler, CallbackQueryHandler, ConversationHandler, filters
 import os
+from datetime import date as dt_date
 
 
 # ============================================
@@ -150,6 +151,226 @@ async def invoiced_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 # ============================================
+# TIME LOGGING CONVERSATION HANDLER
+# ============================================
+
+# Conversation states
+SELECTING_PROJECT, SELECTING_TASK, ENTERING_HOURS, ENTERING_DESCRIPTION = range(4)
+
+
+async def logtime_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Start the time logging conversation"""
+    await update.message.reply_text("⏱️ Loading projects...")
+
+    try:
+        from src.utils.odoo_time_wrapper import get_projects_list
+
+        projects = get_projects_list()
+
+        if not projects:
+            await update.message.reply_text("❌ No projects found or could not connect to Odoo.")
+            return ConversationHandler.END
+
+        # Create inline keyboard with projects (max 2 per row)
+        keyboard = []
+        for i in range(0, len(projects), 2):
+            row = []
+            for project in projects[i:i+2]:
+                row.append(InlineKeyboardButton(
+                    project['name'][:30],  # Truncate long names
+                    callback_data=f"proj_{project['id']}"
+                ))
+            keyboard.append(row)
+
+        # Add cancel button
+        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "📁 *Select a project:*",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+
+        return SELECTING_PROJECT
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+        return ConversationHandler.END
+
+
+async def project_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle project selection and show tasks"""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "cancel":
+        await query.edit_message_text("❌ Time logging cancelled.")
+        return ConversationHandler.END
+
+    # Extract project ID
+    project_id = int(query.data.split("_")[1])
+    context.user_data['project_id'] = project_id
+
+    # Get project name (from button text)
+    project_name = query.message.reply_markup.inline_keyboard[0][0].text
+    for row in query.message.reply_markup.inline_keyboard:
+        for button in row:
+            if button.callback_data == query.data:
+                project_name = button.text
+                break
+
+    context.user_data['project_name'] = project_name
+
+    await query.edit_message_text(f"📁 Project selected: *{project_name}*\n⏳ Loading tasks...", parse_mode="Markdown")
+
+    try:
+        from src.utils.odoo_time_wrapper import get_tasks_list
+
+        tasks = get_tasks_list(project_id)
+
+        if not tasks:
+            await query.message.reply_text("❌ No tasks found for this project.")
+            return ConversationHandler.END
+
+        # Create inline keyboard with tasks
+        keyboard = []
+        for i in range(0, len(tasks), 2):
+            row = []
+            for task in tasks[i:i+2]:
+                row.append(InlineKeyboardButton(
+                    task['name'][:30],
+                    callback_data=f"task_{task['id']}"
+                ))
+            keyboard.append(row)
+
+        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.message.reply_text(
+            f"📋 *Select a task from {project_name}:*",
+            reply_markup=reply_markup,
+            parse_mode="Markdown"
+        )
+
+        return SELECTING_TASK
+
+    except Exception as e:
+        await query.message.reply_text(f"❌ Error: {str(e)}")
+        return ConversationHandler.END
+
+
+async def task_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle task selection and ask for hours"""
+    query = update.callback_query
+    await query.answer()
+
+    if query.data == "cancel":
+        await query.edit_message_text("❌ Time logging cancelled.")
+        return ConversationHandler.END
+
+    # Extract task ID
+    task_id = int(query.data.split("_")[1])
+    context.user_data['task_id'] = task_id
+
+    # Get task name
+    task_name = query.message.reply_markup.inline_keyboard[0][0].text
+    for row in query.message.reply_markup.inline_keyboard:
+        for button in row:
+            if button.callback_data == query.data:
+                task_name = button.text
+                break
+
+    context.user_data['task_name'] = task_name
+
+    await query.edit_message_text(
+        f"✅ Task selected: *{task_name}*\n\n"
+        f"⏱️ *How many hours did you work?*\n"
+        f"(Enter a number like: 2.5)",
+        parse_mode="Markdown"
+    )
+
+    return ENTERING_HOURS
+
+
+async def hours_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle hours input and ask for description"""
+    try:
+        hours = float(update.message.text)
+        if hours <= 0 or hours > 24:
+            await update.message.reply_text("❌ Please enter a valid number of hours (0-24)")
+            return ENTERING_HOURS
+
+        context.user_data['hours'] = hours
+
+        await update.message.reply_text(
+            f"✅ Hours: *{hours}h*\n\n"
+            f"📝 *What did you work on?*\n"
+            f"(Enter a description)",
+            parse_mode="Markdown"
+        )
+
+        return ENTERING_DESCRIPTION
+
+    except ValueError:
+        await update.message.reply_text("❌ Please enter a valid number (e.g., 2.5)")
+        return ENTERING_HOURS
+
+
+async def description_entered(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle description and create time entry"""
+    description = update.message.text.strip()
+
+    if not description:
+        await update.message.reply_text("❌ Description cannot be empty. Please try again.")
+        return ENTERING_DESCRIPTION
+
+    context.user_data['description'] = description
+
+    # Log the time
+    await update.message.reply_text("⏳ Logging time to Odoo...")
+
+    try:
+        from src.utils.odoo_time_wrapper import log_time_entry
+
+        result = log_time_entry(
+            project_id=context.user_data['project_id'],
+            task_id=context.user_data['task_id'],
+            description=description,
+            hours=context.user_data['hours'],
+            log_date=dt_date.today().isoformat()
+        )
+
+        # Show summary
+        summary = (
+            f"{result}\n\n"
+            f"📁 Project: {context.user_data['project_name']}\n"
+            f"📋 Task: {context.user_data['task_name']}\n"
+            f"⏱️ Hours: {context.user_data['hours']}h\n"
+            f"📝 Description: {description}"
+        )
+
+        await update.message.reply_text(summary)
+
+        # Clear user data
+        context.user_data.clear()
+
+        return ConversationHandler.END
+
+    except Exception as e:
+        await update.message.reply_text(f"❌ Error: {str(e)}")
+        context.user_data.clear()
+        return ConversationHandler.END
+
+
+async def cancel_logging(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Cancel the time logging conversation"""
+    await update.message.reply_text("❌ Time logging cancelled.")
+    context.user_data.clear()
+    return ConversationHandler.END
+
+
+# ============================================
 # VOICE MESSAGE HANDLER
 # ============================================
 
@@ -263,6 +484,24 @@ def main():
         bot.add_command("timemonth", timemonth_command)
         bot.add_command("summary", summary_command)
         bot.add_command("invoiced", invoiced_command)
+
+        # Register time logging conversation handler
+        from telegram.ext import CommandHandler
+        logtime_handler = ConversationHandler(
+            entry_points=[CommandHandler("logtime", logtime_command)],
+            states={
+                SELECTING_PROJECT: [CallbackQueryHandler(project_selected)],
+                SELECTING_TASK: [CallbackQueryHandler(task_selected)],
+                ENTERING_HOURS: [MessageHandler(filters.TEXT & ~filters.COMMAND, hours_entered)],
+                ENTERING_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, description_entered)],
+            },
+            fallbacks=[CommandHandler("cancel", cancel_logging)],
+            per_message=False,
+            per_chat=True,
+            per_user=True,
+        )
+        bot.app.add_handler(logtime_handler)
+        print("✓ Time logging conversation handler registered")
 
         # Register voice message handler
         if voice_handler:
