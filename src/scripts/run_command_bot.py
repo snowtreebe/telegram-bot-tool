@@ -155,7 +155,7 @@ async def invoiced_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ============================================
 
 # Conversation states
-SELECTING_PROJECT, SELECTING_TASK, ENTERING_HOURS, ENTERING_DESCRIPTION = range(4)
+SEARCHING_PROJECT, SELECTING_PROJECT, SEARCHING_TASK, SELECTING_TASK, ENTERING_HOURS, ENTERING_DESCRIPTION = range(6)
 
 
 async def logtime_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -171,32 +171,76 @@ async def logtime_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text("❌ No projects found or could not connect to Odoo.")
             return ConversationHandler.END
 
-        # Create inline keyboard with projects (max 2 per row)
-        keyboard = []
-        for i in range(0, len(projects), 2):
-            row = []
-            for project in projects[i:i+2]:
-                row.append(InlineKeyboardButton(
-                    project['name'][:30],  # Truncate long names
-                    callback_data=f"proj_{project['id']}"
-                ))
-            keyboard.append(row)
+        # Store all projects in context
+        context.user_data['all_projects'] = projects
 
-        # Add cancel button
-        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "📁 *Select a project:*",
-            reply_markup=reply_markup,
+            "📁 *Search for a project*\n\n"
+            f"Type part of the project name to search.\n"
+            f"(You have {len(projects)} projects available)\n\n"
+            "Send /cancel to abort.",
             parse_mode="Markdown"
         )
 
-        return SELECTING_PROJECT
+        return SEARCHING_PROJECT
 
     except Exception as e:
         await update.message.reply_text(f"❌ Error: {str(e)}")
         return ConversationHandler.END
+
+
+async def search_projects(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle project search text"""
+    search_term = update.message.text.strip().lower()
+
+    if not search_term:
+        await update.message.reply_text("❌ Please enter a search term.")
+        return SEARCHING_PROJECT
+
+    all_projects = context.user_data.get('all_projects', [])
+
+    # Filter projects by search term
+    matching_projects = [
+        p for p in all_projects
+        if search_term in p['name'].lower()
+    ]
+
+    if not matching_projects:
+        await update.message.reply_text(
+            f"❌ No projects found matching '{search_term}'\n\n"
+            "Try a different search term or /cancel to abort."
+        )
+        return SEARCHING_PROJECT
+
+    if len(matching_projects) > 20:
+        await update.message.reply_text(
+            f"🔍 Found {len(matching_projects)} projects matching '{search_term}'\n\n"
+            "Please be more specific to narrow down the results."
+        )
+        return SEARCHING_PROJECT
+
+    # Show matching projects as buttons
+    keyboard = []
+    for i in range(0, len(matching_projects), 2):
+        row = []
+        for project in matching_projects[i:i+2]:
+            row.append(InlineKeyboardButton(
+                project['name'][:30],
+                callback_data=f"proj_{project['id']}"
+            ))
+        keyboard.append(row)
+
+    keyboard.append([InlineKeyboardButton("🔙 Search again", callback_data="search_again")])
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        f"📁 *Found {len(matching_projects)} project(s):*",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+    return SELECTING_PROJECT
 
 
 async def project_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -206,7 +250,16 @@ async def project_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "cancel":
         await query.edit_message_text("❌ Time logging cancelled.")
+        context.user_data.clear()
         return ConversationHandler.END
+
+    if query.data == "search_again":
+        await query.edit_message_text("📁 Search for a project:")
+        await query.message.reply_text(
+            "Type part of the project name to search.\n"
+            "Send /cancel to abort."
+        )
+        return SEARCHING_PROJECT
 
     # Extract project ID
     project_id = int(query.data.split("_")[1])
@@ -233,31 +286,76 @@ async def project_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.message.reply_text("❌ No tasks found for this project.")
             return ConversationHandler.END
 
-        # Create inline keyboard with tasks
-        keyboard = []
-        for i in range(0, len(tasks), 2):
-            row = []
-            for task in tasks[i:i+2]:
-                row.append(InlineKeyboardButton(
-                    task['name'][:30],
-                    callback_data=f"task_{task['id']}"
-                ))
-            keyboard.append(row)
+        # Store tasks for search
+        context.user_data['all_tasks'] = tasks
 
-        keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
-
-        reply_markup = InlineKeyboardMarkup(keyboard)
         await query.message.reply_text(
-            f"📋 *Select a task from {project_name}:*",
-            reply_markup=reply_markup,
+            f"📋 *Search for a task in '{project_name}'*\n\n"
+            f"Type part of the task name to search.\n"
+            f"(You have {len(tasks)} tasks in this project)\n\n"
+            "Send /cancel to abort.",
             parse_mode="Markdown"
         )
 
-        return SELECTING_TASK
+        return SEARCHING_TASK
 
     except Exception as e:
         await query.message.reply_text(f"❌ Error: {str(e)}")
         return ConversationHandler.END
+
+
+async def search_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle task search text"""
+    search_term = update.message.text.strip().lower()
+
+    if not search_term:
+        await update.message.reply_text("❌ Please enter a search term.")
+        return SEARCHING_TASK
+
+    all_tasks = context.user_data.get('all_tasks', [])
+
+    # Filter tasks by search term
+    matching_tasks = [
+        t for t in all_tasks
+        if search_term in t['name'].lower()
+    ]
+
+    if not matching_tasks:
+        await update.message.reply_text(
+            f"❌ No tasks found matching '{search_term}'\n\n"
+            "Try a different search term or /cancel to abort."
+        )
+        return SEARCHING_TASK
+
+    if len(matching_tasks) > 20:
+        await update.message.reply_text(
+            f"🔍 Found {len(matching_tasks)} tasks matching '{search_term}'\n\n"
+            "Please be more specific to narrow down the results."
+        )
+        return SEARCHING_TASK
+
+    # Show matching tasks as buttons
+    keyboard = []
+    for i in range(0, len(matching_tasks), 2):
+        row = []
+        for task in matching_tasks[i:i+2]:
+            row.append(InlineKeyboardButton(
+                task['name'][:30],
+                callback_data=f"task_{task['id']}"
+            ))
+        keyboard.append(row)
+
+    keyboard.append([InlineKeyboardButton("🔙 Search again", callback_data="search_again_task")])
+    keyboard.append([InlineKeyboardButton("❌ Cancel", callback_data="cancel")])
+
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    await update.message.reply_text(
+        f"📋 *Found {len(matching_tasks)} task(s):*",
+        reply_markup=reply_markup,
+        parse_mode="Markdown"
+    )
+
+    return SELECTING_TASK
 
 
 async def task_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -267,7 +365,17 @@ async def task_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if query.data == "cancel":
         await query.edit_message_text("❌ Time logging cancelled.")
+        context.user_data.clear()
         return ConversationHandler.END
+
+    if query.data == "search_again_task":
+        project_name = context.user_data.get('project_name', 'this project')
+        await query.edit_message_text("📋 Search for a task:")
+        await query.message.reply_text(
+            f"Type part of the task name in '{project_name}' to search.\n"
+            "Send /cancel to abort."
+        )
+        return SEARCHING_TASK
 
     # Extract task ID
     task_id = int(query.data.split("_")[1])
@@ -490,7 +598,9 @@ def main():
         logtime_handler = ConversationHandler(
             entry_points=[CommandHandler("logtime", logtime_command)],
             states={
+                SEARCHING_PROJECT: [MessageHandler(filters.TEXT & ~filters.COMMAND, search_projects)],
                 SELECTING_PROJECT: [CallbackQueryHandler(project_selected)],
+                SEARCHING_TASK: [MessageHandler(filters.TEXT & ~filters.COMMAND, search_tasks)],
                 SELECTING_TASK: [CallbackQueryHandler(task_selected)],
                 ENTERING_HOURS: [MessageHandler(filters.TEXT & ~filters.COMMAND, hours_entered)],
                 ENTERING_DESCRIPTION: [MessageHandler(filters.TEXT & ~filters.COMMAND, description_entered)],
