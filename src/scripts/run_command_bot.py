@@ -446,6 +446,7 @@ COMMAND_MAP = {
     "timemonth": timemonth_command,
     "summary": summary_command,
     "invoiced": invoiced_command,
+    "logtime": logtime_command,
 }
 
 

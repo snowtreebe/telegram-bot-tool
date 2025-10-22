@@ -48,6 +48,7 @@ class VoiceCommandHandler:
             "timemonth": "Show monthly Odoo time summary",
             "summary": "Show comprehensive time summary with weeks, months, and quarters",
             "invoiced": "Show invoice summary with amounts invoiced and paid",
+            "logtime": "Start interactive time logging on a project and task",
         }
 
     async def transcribe_voice(self, audio_file_path: str) -> str:
